@@ -164,3 +164,4 @@ hltv_scraper/*/*.json
 .vscode/
 
 data/**/*.json
+.worktrees/

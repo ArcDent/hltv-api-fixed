@@ -15,4 +15,46 @@ responses:
     schema:
       type: array
   500:
-    description: Internal server error
+    description: News scrape process failed
+    schema:
+      type: object
+      properties:
+        error:
+          type: string
+          example: news_scrape_failed
+        reason:
+          type: string
+          example: process_failed
+        message:
+          type: string
+          example: Scrapy execution failed for the news archive scrape.
+        year:
+          type: integer
+          example: 2026
+        month:
+          type: string
+          example: April
+  502:
+    description: News scrape output/content validation failed
+    schema:
+      type: object
+      properties:
+        error:
+          type: string
+          example: news_scrape_failed
+        reason:
+          type: string
+          description: Validation failure reason.
+          enum:
+            - empty_content
+            - missing_output
+          example: empty_content
+        message:
+          type: string
+          example: News scrape returned empty content for the requested archive period.
+        year:
+          type: integer
+          example: 2026
+        month:
+          type: string
+          example: April

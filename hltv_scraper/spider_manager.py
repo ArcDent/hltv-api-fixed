@@ -29,15 +29,15 @@ class Manager(ABC):
     @abstractmethod
     def get_result(self) -> dict:
         pass
-    
+
     @abstractmethod
     def get_profile(self) -> dict:
         pass
-    
+
     @abstractmethod
     def is_profile(self) -> bool:
         pass
-    
+
     @abstractmethod
     def run_spider(self) -> None:
         pass
@@ -67,16 +67,18 @@ class SpiderManager(Manager):
             self.cleaner.clean(path)
         SpiderProcess().execute(name, self.dir, args)
 
-    def execute(self, name: str, path: str, args: str, hours: int = 1) -> None:
+    def execute(
+        self, name: str, path: str, args: str, hours: int = 1, strict: bool = False
+    ) -> None:
         path = self.path.generate(path)
         if self.__should_run__(path, hours):
             if CF.get("file_exists", file_path=path).check():
                 self.cleaner.clean(path)
-            SpiderProcess().execute(name, self.dir, args)
+            SpiderProcess().execute(name, self.dir, args, strict=strict)
 
-    def get_result(self, path: str) -> dict:
+    def get_result(self, path: str, strict: bool = False) -> dict:
         print(self.path.generate(path))
-        return self.loader.load(self.path.generate(path))
+        return self.loader.load(self.path.generate(path), strict=strict)
 
     def get_profile(self, filename: str, profile: str) -> dict:
         path = self.path.generate(filename)

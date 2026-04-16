@@ -13,6 +13,5 @@ class HltvNewsSpider(scrapy.Spider):
         super().__init__(**kwargs)
 
     def parse(self, response) -> Generator[Any, Any, None]:
-        articles = response.css(".article")
-        data = PF.get_parser("news").parse(articles)
+        data = PF.get_parser("news").parse(response)
         yield from data or []
