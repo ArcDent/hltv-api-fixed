@@ -44,10 +44,13 @@ responses:
           example: news_scrape_failed
         reason:
           type: string
-          description: Validation failure reason.
+          description: Fetch or validation failure reason.
           enum:
             - empty_content
             - missing_output
+            - browser_timeout
+            - challenge_detected
+            - fallback_failed
           example: empty_content
         message:
           type: string

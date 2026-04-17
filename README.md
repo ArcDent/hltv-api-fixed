@@ -11,6 +11,27 @@ pip install -r requirements.txt
 python app.py
 ```
 
+## Browser Requirements for News Scraping
+
+The news endpoint now uses a browser-first fetch path to get through HLTV challenge pages.
+
+Minimum local requirements:
+
+- Chrome or Chromium installed
+- A compatible ChromeDriver installed and available on PATH, or configured explicitly
+- Python dependencies from `requirements.txt` installed in the active environment
+
+Optional runtime environment variables:
+
+- `HLTV_BROWSER_HEADLESS=true`
+- `HLTV_BROWSER_TIMEOUT_SECONDS=20`
+- `HLTV_BROWSER_PAGELOAD_TIMEOUT_SECONDS=30`
+- `HLTV_CHROME_BINARY_PATH=/path/to/chrome`
+- `HLTV_CHROMEDRIVER_PATH=/path/to/chromedriver`
+- `HLTV_BROWSER_DISABLE_SANDBOX=true`
+
+If browser fetch fails in a recoverable way, the scraper may fallback to `cloudscraper`, but browser fetch is the primary path for `/api/v1/news`.
+
 # API Endpoints
 
 ## Swagger
