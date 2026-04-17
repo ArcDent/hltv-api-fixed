@@ -133,6 +133,54 @@ class TestRoutesEndpoints:
                     "month": "April",
                 }
 
+    def test_news_archive_endpoint_browser_timeout_failure_contract(self, client, app):
+        with app.app_context():
+            from hltv_scraper.errors import NewsScrapeFetchError
+
+            with patch(
+                "routes.news.HLTVScraper.get_news",
+                side_effect=NewsScrapeFetchError(
+                    "Browser fetch timed out while waiting for the news archive page.",
+                    reason="browser_timeout",
+                ),
+            ):
+                response = client.get("/api/v1/news/2026/April/")
+
+                assert response.status_code == 502
+                data = json.loads(response.data)
+                assert data == {
+                    "error": "news_scrape_failed",
+                    "reason": "browser_timeout",
+                    "message": "Browser fetch timed out while waiting for the news archive page.",
+                    "year": 2026,
+                    "month": "April",
+                }
+
+    def test_news_archive_endpoint_challenge_detected_failure_contract(
+        self, client, app
+    ):
+        with app.app_context():
+            from hltv_scraper.errors import NewsScrapeFetchError
+
+            with patch(
+                "routes.news.HLTVScraper.get_news",
+                side_effect=NewsScrapeFetchError(
+                    "News archive fetch is still blocked by a challenge page.",
+                    reason="challenge_detected",
+                ),
+            ):
+                response = client.get("/api/v1/news/2026/April/")
+
+                assert response.status_code == 502
+                data = json.loads(response.data)
+                assert data == {
+                    "error": "news_scrape_failed",
+                    "reason": "challenge_detected",
+                    "message": "News archive fetch is still blocked by a challenge page.",
+                    "year": 2026,
+                    "month": "April",
+                }
+
     def test_results_endpoint(self, client, app):
         """Test results endpoint."""
         mock_data = {

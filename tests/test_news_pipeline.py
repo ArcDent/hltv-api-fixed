@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from scrapy.http import HtmlResponse, Request
 
 from hltv_scraper import HLTVScraper
 from hltv_scraper.cache_config import CACHE_HOURS_NEWS
@@ -16,7 +17,7 @@ def test_spider_process_execute_strict_uses_current_python_and_raises_on_non_zer
     from hltv_scraper.errors import NewsScrapeProcessError
 
     process = Mock()
-    process.wait.return_value = 1
+    process.communicate.return_value = ("", "")
     process.returncode = 1
 
     with patch(
@@ -34,6 +35,45 @@ def test_spider_process_execute_strict_uses_current_python_and_raises_on_non_zer
 
     args, _kwargs = mock_popen.call_args
     assert args[0][0] == sys.executable
+
+
+def test_spider_process_execute_strict_raises_fetch_error_from_subprocess_traceback():
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    process = Mock()
+    process.communicate.return_value = (
+        "",
+        (
+            "Traceback (most recent call last):\n"
+            "  File '.../hltv_news.py', line 20, in start_requests\n"
+            "RuntimeError: HLTV_NEWS_FETCH_REASON:browser_timeout:"
+            "Browser fetch timed out while waiting for the news archive page.\n"
+        ),
+    )
+    process.returncode = 0
+
+    with patch(
+        "hltv_scraper.process.subprocess.Popen", return_value=process
+    ) as mock_popen:
+        with pytest.raises(NewsScrapeFetchError) as exc_info:
+            SpiderProcess().execute(
+                "hltv_news",
+                "/tmp",
+                "-a year=2026 -a month=April -o data/news/news_2026_April.json",
+                strict=True,
+            )
+
+    assert exc_info.value.reason == "browser_timeout"
+    assert (
+        str(exc_info.value)
+        == "Browser fetch timed out while waiting for the news archive page."
+    )
+
+    args, kwargs = mock_popen.call_args
+    assert args[0][0] == sys.executable
+    assert kwargs["stdout"] == subprocess.PIPE
+    assert kwargs["stderr"] == subprocess.PIPE
+    assert kwargs["text"] is True
 
 
 def test_json_data_loader_load_strict_raises_when_output_file_missing(tmp_path):
@@ -59,6 +99,26 @@ def test_hltv_scraper_get_news_raises_content_error_when_manager_returns_empty_l
             HLTVScraper.get_news(2026, "April")
 
     assert exc_info.value.reason == "empty_content"
+
+
+def test_news_scrape_fetch_error_defaults_to_browser_fetch_failed_reason():
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    error = NewsScrapeFetchError("browser fetch failed")
+
+    assert str(error) == "browser fetch failed"
+    assert error.reason == "browser_fetch_failed"
+
+
+def test_news_scrape_fetch_error_accepts_explicit_reason():
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    error = NewsScrapeFetchError(
+        "browser timed out",
+        reason="browser_timeout",
+    )
+
+    assert error.reason == "browser_timeout"
 
 
 def test_hltv_scraper_get_news_reraises_manager_execute_process_error():
@@ -167,3 +227,96 @@ def test_news_parser_imports_from_scrapy_cwd_package_layout():
     )
 
     assert import_result.returncode == 0, import_result.stderr
+
+
+def test_news_scrape_fetch_error_imports_from_scrapy_cwd_package_layout():
+    repo_root = Path(__file__).resolve().parents[1]
+    scrapy_cwd = repo_root / "hltv_scraper"
+
+    import_result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from hltv_scraper.errors import NewsScrapeFetchError; "
+                "print(NewsScrapeFetchError.__name__)"
+            ),
+        ],
+        cwd=scrapy_cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert import_result.returncode == 0, import_result.stderr
+
+
+def test_hltv_news_spider_start_requests_uses_challenge_fetcher():
+    from hltv_scraper.hltv_scraper.spiders.hltv_news import HltvNewsSpider
+
+    response = HtmlResponse(
+        url="https://www.hltv.org/news/archive/2026/April",
+        request=Request(url="https://www.hltv.org/news/archive/2026/April"),
+        body=(
+            b"<html><body><a class='newsline article' href='/news/123/test'>"
+            b"<div class='newstext'>Title</div></a></body></html>"
+        ),
+        encoding="utf-8",
+    )
+
+    spider = HltvNewsSpider(year="2026", month="April")
+
+    with patch(
+        "hltv_scraper.hltv_scraper.spiders.hltv_news.fetch_hltv_page",
+        return_value=response,
+    ) as mock_fetch:
+        items = list(spider.start_requests())
+
+    mock_fetch.assert_called_once_with("https://www.hltv.org/news/archive/2026/April")
+    assert items == [
+        {
+            "title": "Title",
+            "img": None,
+            "date": None,
+            "comments": None,
+            "link": "https://www.hltv.org/news/123/test",
+        }
+    ]
+
+
+def test_hltv_news_spider_start_requests_wraps_fetch_error_with_marker():
+    from hltv_scraper.errors import NewsScrapeFetchError
+    from hltv_scraper.hltv_scraper.spiders.hltv_news import HltvNewsSpider
+
+    spider = HltvNewsSpider(year="2026", month="April")
+
+    with patch(
+        "hltv_scraper.hltv_scraper.spiders.hltv_news.fetch_hltv_page",
+        side_effect=NewsScrapeFetchError(
+            "Browser fetch timed out while waiting for the news archive page.",
+            reason="browser_timeout",
+        ),
+    ):
+        with pytest.raises(RuntimeError) as exc_info:
+            list(spider.start_requests())
+
+    assert (
+        str(exc_info.value) == "HLTV_NEWS_FETCH_REASON:browser_timeout:"
+        "Browser fetch timed out while waiting for the news archive page."
+    )
+
+
+def test_hltv_scraper_get_news_propagates_fetch_error_reason():
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    mock_manager = Mock()
+    mock_manager.execute.side_effect = NewsScrapeFetchError(
+        "blocked by challenge",
+        reason="challenge_detected",
+    )
+
+    with patch("hltv_scraper.HLTVScraper._get_manager", return_value=mock_manager):
+        with pytest.raises(NewsScrapeFetchError) as exc_info:
+            HLTVScraper.get_news(2026, "April")
+
+    assert exc_info.value.reason == "challenge_detected"

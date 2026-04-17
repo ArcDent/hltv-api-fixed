@@ -5,6 +5,7 @@ from flasgger import swag_from
 from hltv_scraper import HLTVScraper
 from hltv_scraper.errors import (
     NewsScrapeContentError,
+    NewsScrapeFetchError,
     NewsScrapeOutputError,
     NewsScrapeProcessError,
 )
@@ -41,7 +42,11 @@ def news(
             ),
             500,
         )
-    except (NewsScrapeOutputError, NewsScrapeContentError) as e:
+    except (
+        NewsScrapeOutputError,
+        NewsScrapeContentError,
+        NewsScrapeFetchError,
+    ) as e:
         return (
             jsonify(
                 {
