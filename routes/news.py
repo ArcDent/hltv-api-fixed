@@ -1,5 +1,5 @@
-from flask import Blueprint, Response, jsonify
-from typing import Literal, Optional
+from flask import Blueprint, Response, jsonify, request
+from typing import Optional
 from flasgger import swag_from
 
 from hltv_scraper import HLTVScraper
@@ -18,7 +18,7 @@ news_bp = Blueprint("news", __name__, url_prefix="/api/v1/news")
 @swag_from("../swagger_specs/news_list.yml")
 def news(
     year: Optional[int] = None, month: Optional[str] = None
-) -> Response | tuple[Response, Literal[500]]:
+) -> Response | tuple[Response, int]:
     """Get news from HLTV."""
     if year is None or month is None:
         from datetime import datetime
@@ -26,8 +26,52 @@ def news(
         now = datetime.now()
         year = now.year
         month = now.strftime("%B")
+
     try:
-        data = HLTVScraper.get_news(year, month)
+        is_paginated_mode = "limit" in request.args or "offset" in request.args
+
+        if is_paginated_mode:
+            limit_raw = request.args.get("limit", "50")
+            try:
+                limit = int(limit_raw)
+                if limit <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return (
+                    jsonify(
+                        {
+                            "error": "invalid_pagination",
+                            "message": "Query parameter 'limit' must be a positive integer.",
+                        }
+                    ),
+                    400,
+                )
+
+            offset_raw = request.args.get("offset", "0")
+            try:
+                offset = int(offset_raw)
+                if offset < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return (
+                    jsonify(
+                        {
+                            "error": "invalid_pagination",
+                            "message": "Query parameter 'offset' must be a non-negative integer.",
+                        }
+                    ),
+                    400,
+                )
+
+            data = HLTVScraper.get_news_page(
+                year=year,
+                month=month,
+                limit=limit,
+                offset=offset,
+            )
+        else:
+            data = HLTVScraper.get_news(year, month)
+
         return jsonify(data)
     except NewsScrapeProcessError as e:
         return (

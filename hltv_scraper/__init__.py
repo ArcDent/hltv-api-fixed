@@ -127,6 +127,29 @@ class HLTVScraper:
         return data
 
     @staticmethod
+    def get_news_page(
+        year: int, month: str, limit: int = 50, offset: int = 0
+    ) -> Dict[str, Any]:
+        data = HLTVScraper.get_news(year, month)
+        total = len(data)
+        items = data[offset : offset + limit]
+        count = len(items)
+        has_more = offset + count < total
+        next_offset = offset + limit if has_more else None
+
+        return {
+            "items": items,
+            "total": total,
+            "count": count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": has_more,
+            "next_offset": next_offset,
+            "year": year,
+            "month": month,
+        }
+
+    @staticmethod
     def search_player(name: str) -> Dict[str, Any]:
         manager = HLTVScraper._get_manager()
         name = name.lower()

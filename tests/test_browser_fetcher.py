@@ -21,6 +21,87 @@ def test_browser_runtime_config_reads_environment(monkeypatch):
     assert config.disable_sandbox is False
 
 
+def test_news_http_fetcher_uses_firefox_windows_profile_for_better_archive_access(monkeypatch):
+    from hltv_scraper.news_http_fetcher import fetch_news_archive_with_http_session
+
+    captured_kwargs = {}
+
+    class _FakeScraper:
+        def __init__(self):
+            self.headers = {}
+
+        def get(self, url, timeout):
+            response = Mock()
+            response.url = url
+            response.text = (
+                "<html><body>"
+                "<a class='newsline article' href='/news/555/http-profile-success'>"
+                "<div class='newstext'>HTTP profile title</div>"
+                "</a></body></html>"
+            )
+            return response
+
+    def fake_create_scraper(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _FakeScraper()
+
+    monkeypatch.setattr(
+        "hltv_scraper.news_http_fetcher.cloudscraper.create_scraper",
+        fake_create_scraper,
+    )
+
+    response = fetch_news_archive_with_http_session(
+        "https://www.hltv.org/news/archive/2026/April"
+    )
+
+    assert captured_kwargs == {
+        "browser": {
+            "browser": "firefox",
+            "platform": "windows",
+            "mobile": False,
+        }
+    }
+    assert isinstance(response, HtmlResponse)
+    assert "http-profile-success" in response.text
+
+
+def test_news_http_fetcher_preserves_profile_user_agent(monkeypatch):
+    from hltv_scraper.news_http_fetcher import fetch_news_archive_with_http_session
+
+    class _FakeScraper:
+        def __init__(self):
+            self.headers = {
+                "User-Agent": "profile-firefox-ua",
+            }
+
+        def get(self, url, timeout):
+            response = Mock()
+            response.url = url
+            response.text = (
+                "<html><body>"
+                "<a class='newsline article' href='/news/556/http-profile-ua'>"
+                "<div class='newstext'>HTTP profile UA title</div>"
+                "</a></body></html>"
+            )
+            return response
+
+    scraper = _FakeScraper()
+
+    monkeypatch.setattr(
+        "hltv_scraper.news_http_fetcher.cloudscraper.create_scraper",
+        lambda **kwargs: scraper,
+    )
+
+    response = fetch_news_archive_with_http_session(
+        "https://www.hltv.org/news/archive/2026/April"
+    )
+
+    assert scraper.headers["User-Agent"] == "profile-firefox-ua"
+    assert scraper.headers["Accept-Language"] == "en-US,en;q=0.9"
+    assert isinstance(response, HtmlResponse)
+    assert "http-profile-ua" in response.text
+
+
 def test_html_response_factory_builds_scrapy_html_response():
     from hltv_scraper.response_factory import build_html_response
 
@@ -175,6 +256,14 @@ def fake_fetch(self, url):
     )
 
 
+def fake_http(url):
+    raise NewsScrapeFetchError(
+        "HTTP session hit a challenge page.",
+        reason="challenge_detected",
+    )
+
+
+challenge_fetcher.fetch_news_archive_with_http_session = fake_http
 challenge_fetcher.BrowserHTMLFetcher.fetch = fake_fetch
 
 try:
@@ -200,6 +289,134 @@ else:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ERR:challenge_detected"
+
+
+def test_challenge_fetcher_from_scrapy_cwd_rejects_cloudflare_script_only_browser_html():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[1]
+    scrapy_cwd = project_root / "hltv_scraper"
+    script = """
+from types import SimpleNamespace
+import hltv_scraper.challenge_fetcher as challenge_fetcher
+from hltv_scraper.errors import NewsScrapeFetchError
+
+
+def fake_fetch(self, url):
+    return SimpleNamespace(
+        final_url=url,
+        html=(
+            '<html><head>'
+            '<script>window.__CF$cv$params = {r: "abc111", m: "token"};</script>'
+            '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>'
+            '</head><body><h1>Access denied</h1></body></html>'
+        ),
+    )
+
+
+def fake_http(url):
+    raise NewsScrapeFetchError(
+        "HTTP session hit a challenge page.",
+        reason="challenge_detected",
+    )
+
+
+challenge_fetcher.fetch_news_archive_with_http_session = fake_http
+challenge_fetcher.BrowserHTMLFetcher.fetch = fake_fetch
+
+try:
+    challenge_fetcher.fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+except NewsScrapeFetchError as exc:
+    print(f"ERR:{exc.reason}")
+else:
+    print("OK")
+"""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+        ],
+        cwd=scrapy_cwd,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ERR:challenge_detected"
+
+
+def test_challenge_fetcher_from_scrapy_cwd_accepts_mixed_content_with_cloudflare_script_markers():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[1]
+    scrapy_cwd = project_root / "hltv_scraper"
+    script = """
+from types import SimpleNamespace
+import hltv_scraper.challenge_fetcher as challenge_fetcher
+from hltv_scraper.errors import NewsScrapeFetchError
+
+
+def fake_fetch(self, url):
+    return SimpleNamespace(
+        final_url=url,
+        html=(
+            '<html><head>'
+            '<script>window.__CF$cv$params = {r: "def222", m: "token"};</script>'
+            '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>'
+            '</head><body>'
+            '<a class="newsline article" href="/news/999/mixed-content-ok">'
+            '<div class="newstext">Mixed content title</div>'
+            '</a>'
+            '</body></html>'
+        ),
+    )
+
+
+def fake_http(url):
+    raise NewsScrapeFetchError(
+        "HTTP session hit a challenge page.",
+        reason="challenge_detected",
+    )
+
+
+challenge_fetcher.fetch_news_archive_with_http_session = fake_http
+challenge_fetcher.BrowserHTMLFetcher.fetch = fake_fetch
+
+try:
+    response = challenge_fetcher.fetch_hltv_page(
+        "https://www.hltv.org/news/archive/2026/April"
+    )
+except NewsScrapeFetchError as exc:
+    print(f"ERR:{exc.reason}")
+else:
+    print(f"OK:{'newsline article' in response.text}")
+"""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+        ],
+        cwd=scrapy_cwd,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "OK:True"
 
 
 from unittest.mock import Mock, patch
@@ -342,20 +559,171 @@ def test_browser_html_fetcher_times_out_when_challenge_text_disappears_without_c
 test_browser_html_fetcher_times_out_when_challenge_text_disappears_without_content_markers.BrowserHTMLFetcher = True
 
 
-def test_fetch_hltv_page_returns_html_response_from_browser_result():
+def test_http_first_short_circuits_browser_when_http_content_is_parseable():
     from hltv_scraper.challenge_fetcher import fetch_hltv_page
-    from hltv_scraper.browser_fetcher import BrowserFetchResult
+    from hltv_scraper.response_factory import build_html_response
 
-    browser_result = BrowserFetchResult(
-        final_url="https://www.hltv.org/news/archive/2026/April",
-        html="<html><body><a class='newsline article'>ok</a></body></html>",
+    http_response = build_html_response(
+        url="https://www.hltv.org/news/archive/2026/April",
+        html="""
+        <html>
+          <body>
+            <a class="newsline article" href="/news/321/http-first-success">
+              <div class="newstext">HTTP first title</div>
+            </a>
+          </body>
+        </html>
+        """,
     )
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
-        return_value=browser_result,
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        return_value=http_response,
+        create=True,
+    ) as mock_http_fetch:
+        with patch(
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            side_effect=AssertionError(
+                "Browser fetch must not run when HTTP content is parseable."
+            ),
+        ):
+            response = fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+
+    assert response.url == "https://www.hltv.org/news/archive/2026/April"
+    assert "http-first-success" in response.text
+    mock_http_fetch.assert_called_once_with(
+        "https://www.hltv.org/news/archive/2026/April"
+    )
+
+
+def test_scrapy_cwd_runtime_path_short_circuits_browser_when_http_content_is_parseable():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[1]
+    scrapy_cwd = project_root / "hltv_scraper"
+    script = """
+from scrapy.http import HtmlResponse
+from hltv_scraper.response_factory import build_html_response
+import hltv_scraper.challenge_fetcher as challenge_fetcher
+
+
+def fake_http(url):
+    return build_html_response(
+        url=url,
+        html=(
+            '<html><body>'
+            '<a class="newsline article" href="/news/777/scrapy-cwd-http-first">'
+            '<div class="newstext">Scrapy cwd HTTP title</div>'
+            '</a>'
+            '</body></html>'
+        ),
+    )
+
+
+def fake_browser(self, url):
+    raise AssertionError(
+        'Browser fetch must not run when Scrapy-cwd HTTP content is parseable.'
+    )
+
+
+challenge_fetcher.fetch_news_archive_with_http_session = fake_http
+challenge_fetcher.BrowserHTMLFetcher.fetch = fake_browser
+
+response = challenge_fetcher.fetch_hltv_page(
+    'https://www.hltv.org/news/archive/2026/April'
+)
+print(f"OK:{isinstance(response, HtmlResponse)}:{'scrapy-cwd-http-first' in response.text}")
+"""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+        ],
+        cwd=scrapy_cwd,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "OK:True:True"
+
+
+def test_blocked_http_falls_back_to_browser_and_returns_parseable_html():
+    from hltv_scraper.challenge_fetcher import fetch_hltv_page
+    from hltv_scraper.browser_fetcher import BrowserFetchResult
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    browser_result = BrowserFetchResult(
+        final_url="https://www.hltv.org/news/archive/2026/April",
+        html="""
+        <html>
+          <body>
+            <a class="newsline article" href="/news/654/browser-fallback-success">
+              <div class="newstext">Browser fallback title</div>
+            </a>
+          </body>
+        </html>
+        """,
+    )
+
+    with patch(
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=NewsScrapeFetchError(
+            "HTTP session hit a challenge page.",
+            reason="challenge_detected",
+        ),
+        create=True,
+    ) as mock_http_fetch:
+        with patch(
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            return_value=browser_result,
+        ) as mock_browser_fetch:
+            response = fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+
+    assert response.url == "https://www.hltv.org/news/archive/2026/April"
+    assert "browser-fallback-success" in response.text
+    mock_http_fetch.assert_called_once_with(
+        "https://www.hltv.org/news/archive/2026/April"
+    )
+    mock_browser_fetch.assert_called_once_with(
+        "https://www.hltv.org/news/archive/2026/April"
+    )
+
+
+def test_fetch_hltv_page_returns_html_response_from_browser_result():
+    from hltv_scraper.challenge_fetcher import fetch_hltv_page
+    from hltv_scraper.browser_fetcher import BrowserFetchResult
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    browser_result = BrowserFetchResult(
+        final_url="https://www.hltv.org/news/archive/2026/April",
+        html=(
+            "<html><body>"
+            "<a class='newsline article' href='/news/111/browser-success'>"
+            "<div class='newstext'>Browser success</div>"
+            "</a></body></html>"
+        ),
+    )
+
+    with patch(
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=NewsScrapeFetchError(
+            "HTTP session hit a challenge page.",
+            reason="challenge_detected",
+        ),
     ):
-        response = fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+        with patch(
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            return_value=browser_result,
+        ):
+            response = fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 
     assert response.url == "https://www.hltv.org/news/archive/2026/April"
     assert "newsline article" in response.text
@@ -378,11 +746,18 @@ def test_fetch_hltv_page_raises_challenge_detected_when_browser_result_is_still_
     )
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
-        return_value=browser_result,
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=NewsScrapeFetchError(
+            "HTTP session hit a challenge page.",
+            reason="challenge_detected",
+        ),
     ):
-        with pytest.raises(NewsScrapeFetchError) as exc_info:
-            fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+        with patch(
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            return_value=browser_result,
+        ):
+            with pytest.raises(NewsScrapeFetchError) as exc_info:
+                fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 
     assert exc_info.value.reason == "challenge_detected"
 
@@ -411,79 +786,213 @@ def test_fetch_hltv_page_raises_challenge_detected_when_browser_result_has_gener
     )
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
-        return_value=browser_result,
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=NewsScrapeFetchError(
+            "HTTP session hit a challenge page.",
+            reason="challenge_detected",
+        ),
     ):
-        with pytest.raises(NewsScrapeFetchError) as exc_info:
-            fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+        with patch(
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            return_value=browser_result,
+        ):
+            with pytest.raises(NewsScrapeFetchError) as exc_info:
+                fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 
     assert exc_info.value.reason == "challenge_detected"
+
+
+def test_fetch_hltv_page_raises_challenge_detected_when_browser_result_has_cloudflare_script_markers_only():
+    from hltv_scraper.challenge_fetcher import fetch_hltv_page
+    from hltv_scraper.browser_fetcher import BrowserFetchResult
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    browser_result = BrowserFetchResult(
+        final_url="https://www.hltv.org/news/archive/2026/April",
+        html="""
+        <html>
+          <head>
+            <script>
+              window.__CF$cv$params = {r: "abc999", m: "token"};
+            </script>
+            <script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>
+          </head>
+          <body><h1>Access denied</h1></body>
+        </html>
+        """,
+    )
+
+    with patch(
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=NewsScrapeFetchError(
+            "HTTP session hit a challenge page.",
+            reason="challenge_detected",
+        ),
+    ):
+        with patch(
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            return_value=browser_result,
+        ):
+            with pytest.raises(NewsScrapeFetchError) as exc_info:
+                fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+
+    assert exc_info.value.reason == "challenge_detected"
+    assert str(exc_info.value) == "HTTP session hit a challenge page."
+
+
+def test_fetch_hltv_page_accepts_browser_html_when_articles_exist_alongside_cloudflare_markers():
+    from hltv_scraper.challenge_fetcher import fetch_hltv_page
+    from hltv_scraper.browser_fetcher import BrowserFetchResult
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    browser_result = BrowserFetchResult(
+        final_url="https://www.hltv.org/news/archive/2026/April",
+        html="""
+        <html>
+          <head>
+            <script>
+              window.__CF$cv$params = {r: "abc123", m: "token"};
+            </script>
+            <script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>
+          </head>
+          <body>
+            <a class="newsline article" href="/news/123/mixed-content-ok">
+              <div class="newstext">Mixed content title</div>
+            </a>
+          </body>
+        </html>
+        """,
+    )
+
+    with patch(
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=NewsScrapeFetchError(
+            "HTTP session hit a challenge page.",
+            reason="challenge_detected",
+        ),
+    ):
+        with patch(
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            return_value=browser_result,
+        ):
+            response = fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+
+    assert response.url == "https://www.hltv.org/news/archive/2026/April"
+    assert "newsline article" in response.text
+
+
+def test_fetch_hltv_page_accepts_fallback_html_when_articles_exist_alongside_cloudflare_markers():
+    from hltv_scraper.challenge_fetcher import fetch_hltv_page
+    from hltv_scraper.errors import NewsScrapeFetchError
+    from hltv_scraper.response_factory import build_html_response
+
+    fallback_response = build_html_response(
+        url="https://www.hltv.org/news/archive/2026/April",
+        html="""
+        <html>
+          <head>
+            <script>
+              window.__CF$cv$params = {r: "def456", m: "token"};
+            </script>
+            <script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>
+          </head>
+          <body>
+            <a class="newsline article" href="/news/456/fallback-mixed-content-ok">
+              <div class="newstext">Fallback mixed content title</div>
+            </a>
+          </body>
+        </html>
+        """,
+    )
+
+    with patch(
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=[
+            NewsScrapeFetchError("timed out", reason="browser_timeout"),
+            fallback_response,
+        ],
+    ):
+        with patch(
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            side_effect=NewsScrapeFetchError(
+                "timed out",
+                reason="browser_timeout",
+            ),
+        ):
+            response = fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
+
+    assert response.url == "https://www.hltv.org/news/archive/2026/April"
+    assert "newsline article" in response.text
 
 
 def test_fetch_hltv_page_uses_cloudscraper_fallback_after_browser_timeout():
     from hltv_scraper.challenge_fetcher import fetch_hltv_page
     from hltv_scraper.errors import NewsScrapeFetchError
+    from hltv_scraper.response_factory import build_html_response
 
-    fallback_response = Mock()
-    fallback_response.text = (
-        "<html><body><a class='newsline article'>fallback</a></body></html>"
+    fallback_response = build_html_response(
+        url="https://www.hltv.org/news/archive/2026/April",
+        html=(
+            "<html><body>"
+            "<a class='newsline article' href='/news/222/http-retry-success'>"
+            "<div class='newstext'>Retry success</div>"
+            "</a></body></html>"
+        ),
     )
-    fallback_response.url = "https://www.hltv.org/news/archive/2026/April"
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
-        side_effect=NewsScrapeFetchError(
-            "timed out",
-            reason="browser_timeout",
-        ),
-    ):
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=[
+            NewsScrapeFetchError("timed out", reason="browser_timeout"),
+            fallback_response,
+        ],
+    ) as mock_http_fetch:
         with patch(
-            "hltv_scraper.challenge_fetcher.cloudscraper.create_scraper"
-        ) as mock_create_scraper:
-            scraper = Mock()
-            scraper.get.return_value = fallback_response
-            mock_create_scraper.return_value = scraper
-
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            side_effect=NewsScrapeFetchError(
+                "timed out",
+                reason="browser_timeout",
+            ),
+        ):
             response = fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 
-    assert "fallback" in response.text
-    scraper.get.assert_called_once_with(
-        "https://www.hltv.org/news/archive/2026/April",
-        timeout=20,
-    )
+    assert "http-retry-success" in response.text
+    assert mock_http_fetch.call_count == 2
 
 
 def test_fetch_hltv_page_uses_cloudscraper_fallback_after_browser_fetch_failed():
     from hltv_scraper.challenge_fetcher import fetch_hltv_page
     from hltv_scraper.errors import NewsScrapeFetchError
+    from hltv_scraper.response_factory import build_html_response
 
-    fallback_response = Mock()
-    fallback_response.text = (
-        "<html><body><a class='newsline article'>fallback</a></body></html>"
+    fallback_response = build_html_response(
+        url="https://www.hltv.org/news/archive/2026/April",
+        html=(
+            "<html><body>"
+            "<a class='newsline article' href='/news/333/http-retry-success'>"
+            "<div class='newstext'>Retry success</div>"
+            "</a></body></html>"
+        ),
     )
-    fallback_response.url = "https://www.hltv.org/news/archive/2026/April"
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
-        side_effect=NewsScrapeFetchError(
-            "browser error",
-            reason="browser_fetch_failed",
-        ),
-    ):
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=[
+            NewsScrapeFetchError("timed out", reason="browser_timeout"),
+            fallback_response,
+        ],
+    ) as mock_http_fetch:
         with patch(
-            "hltv_scraper.challenge_fetcher.cloudscraper.create_scraper"
-        ) as mock_create_scraper:
-            scraper = Mock()
-            scraper.get.return_value = fallback_response
-            mock_create_scraper.return_value = scraper
-
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            side_effect=NewsScrapeFetchError(
+                "browser error",
+                reason="browser_fetch_failed",
+            ),
+        ):
             response = fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 
-    assert "fallback" in response.text
-    scraper.get.assert_called_once_with(
-        "https://www.hltv.org/news/archive/2026/April",
-        timeout=20,
-    )
+    assert "http-retry-success" in response.text
+    assert mock_http_fetch.call_count == 2
 
 
 def test_fetch_hltv_page_raises_fallback_failed_when_fallback_request_raises():
@@ -491,19 +1000,19 @@ def test_fetch_hltv_page_raises_fallback_failed_when_fallback_request_raises():
     from hltv_scraper.errors import NewsScrapeFetchError
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
         side_effect=NewsScrapeFetchError(
-            "timed out",
-            reason="browser_timeout",
+            "HTTP-session fetch failed for the news archive page.",
+            reason="fallback_failed",
         ),
     ):
         with patch(
-            "hltv_scraper.challenge_fetcher.cloudscraper.create_scraper"
-        ) as mock_create_scraper:
-            scraper = Mock()
-            scraper.get.side_effect = RuntimeError("network broken")
-            mock_create_scraper.return_value = scraper
-
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            side_effect=NewsScrapeFetchError(
+                "timed out",
+                reason="browser_timeout",
+            ),
+        ):
             with pytest.raises(NewsScrapeFetchError) as exc_info:
                 fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 
@@ -513,25 +1022,27 @@ def test_fetch_hltv_page_raises_fallback_failed_when_fallback_request_raises():
 def test_fetch_hltv_page_raises_challenge_detected_when_fallback_is_still_blocked():
     from hltv_scraper.challenge_fetcher import fetch_hltv_page
     from hltv_scraper.errors import NewsScrapeFetchError
+    from hltv_scraper.response_factory import build_html_response
 
-    fallback_response = Mock()
-    fallback_response.text = "<html><head><title>Just a moment...</title></head></html>"
-    fallback_response.url = "https://www.hltv.org/news/archive/2026/April"
+    fallback_response = build_html_response(
+        url="https://www.hltv.org/news/archive/2026/April",
+        html="<html><head><title>Just a moment...</title></head></html>",
+    )
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
-        side_effect=NewsScrapeFetchError(
-            "timed out",
-            reason="browser_timeout",
-        ),
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=[
+            NewsScrapeFetchError("timed out", reason="browser_timeout"),
+            fallback_response,
+        ],
     ):
         with patch(
-            "hltv_scraper.challenge_fetcher.cloudscraper.create_scraper"
-        ) as mock_create_scraper:
-            scraper = Mock()
-            scraper.get.return_value = fallback_response
-            mock_create_scraper.return_value = scraper
-
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            side_effect=NewsScrapeFetchError(
+                "timed out",
+                reason="browser_timeout",
+            ),
+        ):
             with pytest.raises(NewsScrapeFetchError) as exc_info:
                 fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 
@@ -541,25 +1052,27 @@ def test_fetch_hltv_page_raises_challenge_detected_when_fallback_is_still_blocke
 def test_fetch_hltv_page_raises_challenge_detected_when_fallback_lacks_archive_markers():
     from hltv_scraper.challenge_fetcher import fetch_hltv_page
     from hltv_scraper.errors import NewsScrapeFetchError
+    from hltv_scraper.response_factory import build_html_response
 
-    fallback_response = Mock()
-    fallback_response.text = "<html><body><h1>Access denied</h1></body></html>"
-    fallback_response.url = "https://www.hltv.org/news/archive/2026/April"
+    fallback_response = build_html_response(
+        url="https://www.hltv.org/news/archive/2026/April",
+        html="<html><body><h1>Access denied</h1></body></html>",
+    )
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
-        side_effect=NewsScrapeFetchError(
-            "timed out",
-            reason="browser_timeout",
-        ),
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=[
+            NewsScrapeFetchError("timed out", reason="browser_timeout"),
+            fallback_response,
+        ],
     ):
         with patch(
-            "hltv_scraper.challenge_fetcher.cloudscraper.create_scraper"
-        ) as mock_create_scraper:
-            scraper = Mock()
-            scraper.get.return_value = fallback_response
-            mock_create_scraper.return_value = scraper
-
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            side_effect=NewsScrapeFetchError(
+                "timed out",
+                reason="browser_timeout",
+            ),
+        ):
             with pytest.raises(NewsScrapeFetchError) as exc_info:
                 fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 
@@ -569,38 +1082,40 @@ def test_fetch_hltv_page_raises_challenge_detected_when_fallback_lacks_archive_m
 def test_fetch_hltv_page_raises_challenge_detected_when_fallback_has_generic_json_ld_only():
     from hltv_scraper.challenge_fetcher import fetch_hltv_page
     from hltv_scraper.errors import NewsScrapeFetchError
+    from hltv_scraper.response_factory import build_html_response
 
-    fallback_response = Mock()
-    fallback_response.text = """
-    <html>
-      <head>
-        <script type="application/ld+json">
-          {
-            "@context": "https://schema.org",
-            "@type": "BreadcrumbList",
-            "itemListElement": []
-          }
-        </script>
-      </head>
-      <body><h1>Access denied</h1></body>
-    </html>
-    """
-    fallback_response.url = "https://www.hltv.org/news/archive/2026/April"
+    fallback_response = build_html_response(
+        url="https://www.hltv.org/news/archive/2026/April",
+        html="""
+        <html>
+          <head>
+            <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@type": "BreadcrumbList",
+                "itemListElement": []
+              }
+            </script>
+          </head>
+          <body><h1>Access denied</h1></body>
+        </html>
+        """,
+    )
 
     with patch(
-        "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
-        side_effect=NewsScrapeFetchError(
-            "timed out",
-            reason="browser_timeout",
-        ),
+        "hltv_scraper.challenge_fetcher.fetch_news_archive_with_http_session",
+        side_effect=[
+            NewsScrapeFetchError("timed out", reason="browser_timeout"),
+            fallback_response,
+        ],
     ):
         with patch(
-            "hltv_scraper.challenge_fetcher.cloudscraper.create_scraper"
-        ) as mock_create_scraper:
-            scraper = Mock()
-            scraper.get.return_value = fallback_response
-            mock_create_scraper.return_value = scraper
-
+            "hltv_scraper.challenge_fetcher.BrowserHTMLFetcher.fetch",
+            side_effect=NewsScrapeFetchError(
+                "timed out",
+                reason="browser_timeout",
+            ),
+        ):
             with pytest.raises(NewsScrapeFetchError) as exc_info:
                 fetch_hltv_page("https://www.hltv.org/news/archive/2026/April")
 

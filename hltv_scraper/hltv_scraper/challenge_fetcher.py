@@ -1,75 +1,63 @@
-import cloudscraper
 from scrapy.http import HtmlResponse
 
 from .browser_fetcher import BrowserHTMLFetcher
 from .errors import NewsScrapeFetchError
+from .news_content import extract_news_articles
+from .news_http_fetcher import fetch_news_archive_with_http_session
+from .news_page_detection import is_blocked_archive_page
 from .response_factory import build_html_response
 
 
-def _looks_like_challenge(html: str) -> bool:
-    normalized = (html or "").lower()
-    return any(
-        marker in normalized
-        for marker in (
-            "just a moment...",
-            "checking your browser before accessing",
-            "cf-browser-verification",
-            "attention required! | cloudflare",
+def _validate_candidate(
+    response: HtmlResponse, *, source: str
+) -> NewsScrapeFetchError | None:
+    if is_blocked_archive_page(response.text):
+        return NewsScrapeFetchError(
+            f"{source} reached a challenge page instead of the news archive page.",
+            reason="challenge_detected",
         )
-    )
+
+    if not extract_news_articles(response):
+        return NewsScrapeFetchError(
+            f"{source} did not return parseable news archive content.",
+            reason="challenge_detected",
+        )
+
+    return None
 
 
-def _looks_like_archive_content(html: str) -> bool:
-    normalized = (html or "").lower()
-    has_news_jsonld = (
-        "application/ld+json" in normalized
-        and '"@type"' in normalized
-        and "newsarticle" in normalized
-    )
-    return (
-        "a.newsline.article" in normalized
-        or "newsline article" in normalized
-        or has_news_jsonld
-    )
+def _fetch_with_browser(url: str) -> HtmlResponse:
+    browser_result = BrowserHTMLFetcher().fetch(url)
+    return build_html_response(browser_result.final_url, browser_result.html)
 
 
 def fetch_hltv_page(url: str) -> HtmlResponse:
-    try:
-        browser_result = BrowserHTMLFetcher().fetch(url)
-        if _looks_like_challenge(browser_result.html):
-            raise NewsScrapeFetchError(
-                "Browser fetch reached a challenge page instead of the news archive page.",
-                reason="challenge_detected",
-            )
-        if not _looks_like_archive_content(browser_result.html):
-            raise NewsScrapeFetchError(
-                "Browser fetch did not return expected news archive content.",
-                reason="challenge_detected",
-            )
-        return build_html_response(browser_result.final_url, browser_result.html)
-    except NewsScrapeFetchError as browser_error:
-        if browser_error.reason not in {"browser_timeout", "browser_fetch_failed"}:
-            raise
+    fetch_attempts = (
+        ("HTTP-session fetch", lambda: fetch_news_archive_with_http_session(url)),
+        ("Browser fetch", lambda: _fetch_with_browser(url)),
+        ("HTTP-session retry fetch", lambda: fetch_news_archive_with_http_session(url)),
+    )
 
-        scraper = cloudscraper.create_scraper()
+    last_error: NewsScrapeFetchError | None = None
+
+    for source, fetch_attempt in fetch_attempts:
         try:
-            fallback_response = scraper.get(url, timeout=20)
-        except Exception as exc:
-            raise NewsScrapeFetchError(
-                "Fallback fetch failed for the news archive page.",
-                reason="fallback_failed",
-            ) from exc
+            response = fetch_attempt()
+        except NewsScrapeFetchError as exc:
+            last_error = exc
+            continue
 
-        if _looks_like_challenge(fallback_response.text):
-            raise NewsScrapeFetchError(
-                "News archive fetch is still blocked by a challenge page.",
-                reason="challenge_detected",
-            )
+        validation_error = _validate_candidate(response, source=source)
+        if validation_error is not None:
+            last_error = validation_error
+            continue
 
-        if not _looks_like_archive_content(fallback_response.text):
-            raise NewsScrapeFetchError(
-                "Fallback fetch did not return expected news archive content.",
-                reason="challenge_detected",
-            )
+        return response
 
-        return build_html_response(fallback_response.url, fallback_response.text)
+    if last_error is not None:
+        raise last_error
+
+    raise NewsScrapeFetchError(
+        "Unable to fetch parseable news archive content.",
+        reason="challenge_detected",
+    )
