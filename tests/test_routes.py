@@ -253,6 +253,54 @@ class TestRoutesEndpoints:
                     "month": "April",
                 }
 
+    def test_news_archive_endpoint_invalid_json_failure_contract(self, client, app):
+        """Test news archive endpoint error contract for malformed JSON output."""
+        with app.app_context():
+            from hltv_scraper.errors import NewsScrapeOutputError
+
+            with patch(
+                "routes.news.HLTVScraper.get_news",
+                side_effect=NewsScrapeOutputError(
+                    "News scrape output file is not valid JSON for the requested archive period.",
+                    reason="invalid_json",
+                ),
+            ):
+                response = client.get("/api/v1/news/2026/April/")
+
+                assert response.status_code == 502
+                data = json.loads(response.data)
+                assert data == {
+                    "error": "news_scrape_failed",
+                    "reason": "invalid_json",
+                    "message": "News scrape output file is not valid JSON for the requested archive period.",
+                    "year": 2026,
+                    "month": "April",
+                }
+
+    def test_news_archive_endpoint_invalid_encoding_failure_contract(self, client, app):
+        """Test news archive endpoint error contract for invalid UTF-8 output."""
+        with app.app_context():
+            from hltv_scraper.errors import NewsScrapeOutputError
+
+            with patch(
+                "routes.news.HLTVScraper.get_news",
+                side_effect=NewsScrapeOutputError(
+                    "News scrape output file is not valid UTF-8 for the requested archive period.",
+                    reason="invalid_encoding",
+                ),
+            ):
+                response = client.get("/api/v1/news/2026/April/")
+
+                assert response.status_code == 502
+                data = json.loads(response.data)
+                assert data == {
+                    "error": "news_scrape_failed",
+                    "reason": "invalid_encoding",
+                    "message": "News scrape output file is not valid UTF-8 for the requested archive period.",
+                    "year": 2026,
+                    "month": "April",
+                }
+
     def test_news_archive_endpoint_browser_timeout_failure_contract(self, client, app):
         with app.app_context():
             from hltv_scraper.errors import NewsScrapeFetchError

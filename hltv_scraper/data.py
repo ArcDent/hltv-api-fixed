@@ -13,16 +13,32 @@ class DataLoader(ABC):
 
 class JsonDataLoader(DataLoader):
     def load(self, file: str, strict: bool = False) -> dict:
-        try:
-            if not os.path.exists(file):
-                if strict:
-                    raise NewsScrapeOutputError(
-                        "News scrape produced no output for the requested archive period."
-                    )
-                return {}
+        if not os.path.exists(file):
+            if strict:
+                raise NewsScrapeOutputError(
+                    "News scrape produced no output for the requested archive period."
+                )
+            return {}
 
-            with open(file, "r") as json_file:
+        try:
+            with open(file, "r", encoding="utf-8") as json_file:
                 return json.load(json_file)
+        except UnicodeDecodeError as e:
+            if strict:
+                raise NewsScrapeOutputError(
+                    "News scrape output file is not valid UTF-8 for the requested archive period.",
+                    reason="invalid_encoding",
+                ) from e
+            print(f"Error loading JSON file {file}: {e}")
+            return {}
+        except json.JSONDecodeError as e:
+            if strict:
+                raise NewsScrapeOutputError(
+                    "News scrape output file is not valid JSON for the requested archive period.",
+                    reason="invalid_json",
+                ) from e
+            print(f"Error loading JSON file {file}: {e}")
+            return {}
         except Exception as e:
             if strict:
                 raise NewsScrapeOutputError(

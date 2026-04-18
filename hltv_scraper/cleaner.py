@@ -11,4 +11,4 @@ class OldDataCleaner(ABC):
 class JsonOldDataCleaner(OldDataCleaner):
     @staticmethod
     def clean(file: str) -> None:
-        open(file, "w").close()
+        open(file, "w", encoding="utf-8").close()
