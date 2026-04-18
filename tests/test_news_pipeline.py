@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -112,6 +113,88 @@ def test_json_data_loader_load_strict_raises_when_output_file_missing(tmp_path):
         JsonDataLoader().load(str(missing_output), strict=True)
 
     assert exc_info.value.reason == "missing_output"
+
+
+def test_json_data_loader_load_strict_reads_utf8_json_regardless_of_locale_default(tmp_path):
+    news_file = tmp_path / "news_2026_April.json"
+    payload = [
+        {
+            "title": 'Xizt: "We\'re losing a lot of tight games — that\'s the story of the whole season"'
+        }
+    ]
+    news_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with patch("builtins.open", wraps=open) as mock_open:
+        data = JsonDataLoader().load(str(news_file), strict=True)
+
+    assert data == payload
+    assert mock_open.call_args.kwargs["encoding"] == "utf-8"
+
+
+def test_json_data_loader_load_strict_raises_invalid_json_reason_for_malformed_payload(
+    tmp_path,
+):
+    from hltv_scraper.errors import NewsScrapeOutputError
+
+    news_file = tmp_path / "news_2026_April.json"
+    news_file.write_text('{"title": "broken"', encoding="utf-8")
+
+    with pytest.raises(NewsScrapeOutputError) as exc_info:
+        JsonDataLoader().load(str(news_file), strict=True)
+
+    assert exc_info.value.reason == "invalid_json"
+    assert (
+        str(exc_info.value)
+        == "News scrape output file is not valid JSON for the requested archive period."
+    )
+
+
+def test_json_data_loader_load_strict_raises_invalid_encoding_reason_for_non_utf8_payload(
+    tmp_path,
+):
+    from hltv_scraper.errors import NewsScrapeOutputError
+
+    news_file = tmp_path / "news_2026_April.json"
+    news_file.write_bytes(b'[\x80]')
+
+    with pytest.raises(NewsScrapeOutputError) as exc_info:
+        JsonDataLoader().load(str(news_file), strict=True)
+
+    assert exc_info.value.reason == "invalid_encoding"
+    assert (
+        str(exc_info.value)
+        == "News scrape output file is not valid UTF-8 for the requested archive period."
+    )
+
+
+def test_json_file_empty_condition_returns_false_for_invalid_json(tmp_path):
+    from hltv_scraper.conditions import JsonFileEmptyCondition
+
+    news_file = tmp_path / "news_2026_April.json"
+    news_file.write_text('{"title": "broken"', encoding="utf-8")
+
+    assert JsonFileEmptyCondition(str(news_file)).check() is False
+
+
+def test_json_file_empty_condition_reads_utf8_json_with_non_ascii_text(tmp_path):
+    from hltv_scraper.conditions import JsonFileEmptyCondition
+
+    news_file = tmp_path / "news_2026_April.json"
+    news_file.write_text('[{"title": "tight games — season story"}]', encoding="utf-8")
+
+    assert JsonFileEmptyCondition(str(news_file)).check() is False
+
+
+def test_json_file_empty_condition_opens_json_with_utf8_encoding(tmp_path):
+    from hltv_scraper.conditions import JsonFileEmptyCondition
+
+    news_file = tmp_path / "news_2026_April.json"
+    news_file.write_text('[{"title": "tight games — season story"}]', encoding="utf-8")
+
+    with patch("builtins.open", wraps=open) as mock_open:
+        assert JsonFileEmptyCondition(str(news_file)).check() is False
+
+    assert mock_open.call_args.kwargs["encoding"] == "utf-8"
 
 
 def test_hltv_scraper_get_news_raises_content_error_when_manager_returns_empty_list():

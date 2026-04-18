@@ -35,12 +35,12 @@ class JsonFileEmptyCondition(Condition):
             return True
 
         try:
-            with open(self.file_path, "r") as file:
+            with open(self.file_path, "r", encoding="utf-8") as file:
                 file_data = json.load(file)
                 return file_data == []
         except Exception as e:
             print(f"Error loading JSON file: {e}")
-            return True
+            return False
         
 class FileExistsCondition(Condition):
     def __init__(self, file_path:str) -> None:
