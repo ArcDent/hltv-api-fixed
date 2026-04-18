@@ -1,3 +1,4 @@
+import sys
 import scrapy
 from typing import Any, Generator
 
@@ -21,9 +22,9 @@ class HltvNewsSpider(scrapy.Spider):
         try:
             response = fetch_hltv_page(self.archive_url)
         except NewsScrapeFetchError as exc:
-            raise RuntimeError(
-                f"HLTV_NEWS_FETCH_REASON:{exc.reason}:{str(exc)}"
-            ) from exc
+            marker = f"HLTV_NEWS_FETCH_REASON:{exc.reason}:{str(exc)}"
+            print(marker, file=sys.stderr)
+            raise RuntimeError(marker) from exc
         yield from self.parse(response)
 
     def parse(self, response) -> Generator[Any, Any, None]:

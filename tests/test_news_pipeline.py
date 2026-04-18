@@ -76,6 +76,33 @@ def test_spider_process_execute_strict_raises_fetch_error_from_subprocess_traceb
     assert kwargs["text"] is True
 
 
+def test_spider_process_execute_strict_raises_fetch_error_from_plain_marker_line():
+    from hltv_scraper.errors import NewsScrapeFetchError
+
+    process = Mock()
+    process.communicate.return_value = (
+        "",
+        "HLTV_NEWS_FETCH_REASON:challenge_detected:"
+        "News archive fetch is still blocked by a challenge page.\n",
+    )
+    process.returncode = 0
+
+    with patch("hltv_scraper.process.subprocess.Popen", return_value=process):
+        with pytest.raises(NewsScrapeFetchError) as exc_info:
+            SpiderProcess().execute(
+                "hltv_news",
+                "/tmp",
+                "-a year=2026 -a month=April -o data/news/news_2026_April.json",
+                strict=True,
+            )
+
+    assert exc_info.value.reason == "challenge_detected"
+    assert (
+        str(exc_info.value)
+        == "News archive fetch is still blocked by a challenge page."
+    )
+
+
 def test_json_data_loader_load_strict_raises_when_output_file_missing(tmp_path):
     from hltv_scraper.errors import NewsScrapeOutputError
 
@@ -303,6 +330,29 @@ def test_hltv_news_spider_start_requests_wraps_fetch_error_with_marker():
     assert (
         str(exc_info.value) == "HLTV_NEWS_FETCH_REASON:browser_timeout:"
         "Browser fetch timed out while waiting for the news archive page."
+    )
+
+
+def test_hltv_news_spider_start_requests_prints_fetch_marker_before_raising(capsys):
+    from hltv_scraper.errors import NewsScrapeFetchError
+    from hltv_scraper.hltv_scraper.spiders.hltv_news import HltvNewsSpider
+
+    spider = HltvNewsSpider(year="2026", month="April")
+
+    with patch(
+        "hltv_scraper.hltv_scraper.spiders.hltv_news.fetch_hltv_page",
+        side_effect=NewsScrapeFetchError(
+            "Browser fetch reached a challenge page instead of the news archive page.",
+            reason="challenge_detected",
+        ),
+    ):
+        with pytest.raises(RuntimeError):
+            list(spider.start_requests())
+
+    captured = capsys.readouterr()
+    assert (
+        captured.err.strip() == "HLTV_NEWS_FETCH_REASON:challenge_detected:"
+        "Browser fetch reached a challenge page instead of the news archive page."
     )
 
 

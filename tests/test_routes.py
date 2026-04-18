@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 
@@ -60,6 +61,125 @@ class TestRoutesEndpoints:
                 data = json.loads(response.data)
                 assert isinstance(data, list)
                 assert data == mock_data
+
+    def test_news_endpoint_pagination_returns_page_metadata(self, client, app):
+        """Test paginated news endpoint mode returns metadata envelope."""
+        expected_year = datetime.now().year
+        expected_month = datetime.now().strftime("%B")
+
+        mock_items = [
+            {"title": "Headline 1", "date": "2026-04-01"},
+            {"title": "Headline 2", "date": "2026-04-02"},
+        ]
+        mock_page = {
+            "items": mock_items,
+            "total": 120,
+            "count": 2,
+            "limit": 50,
+            "offset": 0,
+            "has_more": True,
+            "next_offset": 50,
+            "year": expected_year,
+            "month": expected_month,
+        }
+
+        with app.app_context():
+            with patch(
+                "routes.news.HLTVScraper.get_news_page",
+                return_value=mock_page,
+                create=True,
+            ) as mock_get_news_page:
+                with patch("hltv_scraper.HLTVScraper._get_manager") as mock_get_manager:
+                    mock_manager = Mock()
+                    mock_manager.execute.return_value = None
+                    mock_manager.get_result.return_value = mock_items
+                    mock_get_manager.return_value = mock_manager
+
+                    response = client.get("/api/v1/news?limit=50")
+
+                    mock_get_news_page.assert_called_once_with(
+                        limit=50,
+                        offset=0,
+                        year=expected_year,
+                        month=expected_month,
+                    )
+                    assert response.status_code == 200
+                    data = json.loads(response.data)
+                    assert isinstance(data, dict)
+                    for key in (
+                        "items",
+                        "total",
+                        "count",
+                        "limit",
+                        "offset",
+                        "has_more",
+                        "next_offset",
+                        "year",
+                        "month",
+                    ):
+                        assert key in data
+                    assert data == mock_page
+
+    def test_news_endpoint_offset_pagination(self, client, app):
+        """Test archive news endpoint returns later page metadata with non-zero offset."""
+        mock_items = [
+            {"title": "Headline 3", "date": "2026-04-03"},
+            {"title": "Headline 4", "date": "2026-04-04"},
+        ]
+        mock_page = {
+            "items": mock_items,
+            "total": 5,
+            "count": 2,
+            "limit": 2,
+            "offset": 2,
+            "has_more": True,
+            "next_offset": 4,
+            "year": 2026,
+            "month": "April",
+        }
+
+        with app.app_context():
+            with patch(
+                "routes.news.HLTVScraper.get_news_page",
+                return_value=mock_page,
+                create=True,
+            ) as mock_get_news_page:
+                with patch("hltv_scraper.HLTVScraper._get_manager") as mock_get_manager:
+                    mock_manager = Mock()
+                    mock_manager.execute.return_value = None
+                    mock_manager.get_result.return_value = mock_items
+                    mock_get_manager.return_value = mock_manager
+
+                    response = client.get("/api/v1/news/2026/April/?limit=2&offset=2")
+
+                    mock_get_news_page.assert_called_once_with(
+                        limit=2,
+                        offset=2,
+                        year=2026,
+                        month="April",
+                    )
+                    assert response.status_code == 200
+                    data = json.loads(response.data)
+                    assert isinstance(data, dict)
+                    assert data == mock_page
+
+    def test_news_endpoint_invalid_pagination_limit_zero(self, client, app):
+        """Test invalid pagination query contract for non-positive limit."""
+        with app.app_context():
+            with patch("hltv_scraper.HLTVScraper._get_manager") as mock_get_manager:
+                mock_manager = Mock()
+                mock_manager.execute.return_value = None
+                mock_manager.get_result.return_value = []
+                mock_get_manager.return_value = mock_manager
+
+                response = client.get("/api/v1/news?limit=0")
+
+            assert response.status_code == 400
+            data = json.loads(response.data)
+            assert data == {
+                "error": "invalid_pagination",
+                "message": "Query parameter 'limit' must be a positive integer.",
+            }
 
     def test_news_archive_endpoint_process_failure_contract(self, client, app):
         """Test news archive endpoint error contract for process failures."""
